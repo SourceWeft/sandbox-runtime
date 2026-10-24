@@ -1,0 +1,287 @@
+# SourceWeft: keep our patches on top of the latest upstream release.
+#
+# Daily (and on demand) this replays our commits onto the newest upstream
+# `v*` tag, then builds and tests the result:
+#   - Linux: upstream's own test suite (lint, typecheck, seccomp, tests);
+#   - Windows x64/arm64: srt-win with upstream names (cargo test + clippy),
+#     srt-win with our namespace, and a coexistence check against upstream's
+#     default install of the new and the previous release.
+# Only when everything passes does it move `sourceweft/windows-namespace`
+# and tag the result `<upstream tag>-sourceweft.<n>`. That push needs the
+# `SYNC_TOKEN` secret (a token allowed to write contents and workflows,
+# since upstream commits change .github/workflows).
+name: sourceweft upstream sync
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: Upstream tag to rebase onto (default = newest v*)
+        required: false
+      force:
+        description: Rebuild and retag even when already on that tag
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sourceweft-sync
+  cancel-in-progress: false
+
+env:
+  PATCH_BRANCH: sourceweft/windows-namespace
+  NS: sourceweft
+  NS_USER: sourceweft-sandbox
+  NS_GUID: 7d1c3a52-9e4b-4f6a-8c21-5b0e9f3d6a17
+  NS_PORTS: 60180-60189
+  BUN_VERSION: 1.4.2
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      skip: ${{ steps.rebase.outputs.skip }}
+      tag: ${{ steps.rebase.outputs.tag }}
+      base: ${{ steps.rebase.outputs.base }}
+      head: ${{ steps.rebase.outputs.head }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PATCH_BRANCH }}
+          fetch-depth: 0
+      - name: Replay our commits onto the upstream release
+        id: rebase
+        env:
+          INPUT_TAG: ${{ inputs.upstream_tag }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          git config user.name 'sourceweft-sync'
+          git config user.email 'sourceweft-sync@users.noreply.github.com'
+          git remote add upstream https://github.com/anthropics/sandbox-runtime.git
+          git fetch --quiet --tags upstream
+          base=$(tr -d '[:space:]' < .sourceweft/upstream-version)
+          tag=${INPUT_TAG:-$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)}
+          git rev-parse -q --verify "refs/tags/$tag" >/dev/null || { echo "::error::upstream tag $tag not found"; exit 1; }
+          git merge-base --is-ancestor "$base" HEAD || { echo "::error::$PATCH_BRANCH is not based on $base"; exit 1; }
+          head=$(git rev-parse HEAD)
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$tag" = "$base" ] && [ "${FORCE:-false}" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Already on $tag; nothing to do." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          git checkout --quiet -b candidate "$tag"
+          for c in $(git rev-list --reverse "$base..$head"); do
+            if ! git cherry-pick "$c" > /dev/null; then
+              {
+                echo "### Conflict replaying onto $tag"
+                echo "commit: $(git log -1 --format='%h %s' "$c")"
+                echo '```'
+                git diff --name-only --diff-filter=U
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              git cherry-pick --abort
+              exit 1
+            fi
+          done
+          # The last commit of ours carries .sourceweft/; record the new base in it.
+          printf '%s\n' "$tag" > .sourceweft/upstream-version
+          git commit --quiet --amend --no-edit .sourceweft/upstream-version
+          git bundle create candidate.bundle candidate
+          {
+            echo "### Replayed onto $tag (was $base)"
+            echo '```'
+            git log --format='%h %s' "$tag..candidate"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: steps.rebase.outputs.skip == 'false'
+        with:
+          name: candidate
+          path: candidate.bundle
+
+  linux:
+    needs: prepare
+    if: needs.prepare.outputs.skip == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate
+      - name: Check out the candidate
+        run: git clone --quiet --branch candidate candidate.bundle srt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: System dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap libseccomp-dev gcc socat ripgrep apparmor-profiles zsh
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          bwrap --unshare-pid --unshare-user --cap-drop ALL --ro-bind / / --proc /proc true
+      - name: Upstream test suite
+        working-directory: srt
+        env:
+          HUSKY: '0'
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npx eslint . --ignore-pattern '.sourceweft/**'
+          npm run typecheck
+          npm run build:seccomp
+          npm run build:java-agent
+          npm run build
+          npm test
+
+  windows:
+    needs: prepare
+    if: needs.prepare.outputs.skip == 'false'
+    name: windows (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    env:
+      RESULTS_DIR: ${{ github.workspace }}\results
+      WS_ROOT: ${{ github.workspace }}\work
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate
+      - name: Check out the candidate
+        run: git clone --quiet --branch candidate candidate.bundle srt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Rust toolchain (from rust-toolchain.toml)
+        working-directory: srt
+        run: rustup toolchain install
+      - name: srt-win with upstream names (build, test, clippy)
+        working-directory: srt
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          cargo build  --release --locked --manifest-path vendor/srt-win-src/Cargo.toml
+          cargo test   --release --locked --manifest-path vendor/srt-win-src/Cargo.toml
+          cargo clippy --release --locked --manifest-path vendor/srt-win-src/Cargo.toml --all-targets -- -D warnings
+      - name: srt-win with our namespace
+        working-directory: srt
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:SRT_WIN_NAMESPACE = $env:NS
+          $env:SRT_WIN_SANDBOX_USER = $env:NS_USER
+          $env:SRT_WIN_SUBLAYER_GUID = $env:NS_GUID
+          cargo build  --release --locked --manifest-path vendor/srt-win-src/Cargo.toml --target-dir vendor/srt-win-src/target-ns
+          cargo clippy --release --locked --manifest-path vendor/srt-win-src/Cargo.toml --target-dir vendor/srt-win-src/target-ns --all-targets -- -D warnings
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\libexec-ns", "vendor/srt-win/$arch", "$env:RUNNER_TEMP\dist" | Out-Null
+          Copy-Item vendor/srt-win-src/target-ns/release/srt-win.exe "$env:RUNNER_TEMP\libexec-ns\srt-win.exe"
+          Copy-Item vendor/srt-win-src/target-ns/release/srt-win.exe "vendor/srt-win/$arch/srt-win.exe" -Force
+          Copy-Item vendor/srt-win-src/target-ns/release/srt-win.exe "$env:RUNNER_TEMP\dist\srt-win-$env:NS-$arch.exe"
+      - name: Build the library and the test sidecars
+        env:
+          HUSKY: '0'
+          PREVIOUS: ${{ needs.prepare.outputs.base }}
+          CURRENT: ${{ needs.prepare.outputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          Push-Location srt
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          Pop-Location
+          $ours = "$env:RUNNER_TEMP\sidecar-ns"
+          New-Item -ItemType Directory -Force -Path $ours, "$env:RUNNER_TEMP\bin" | Out-Null
+          Push-Location $ours
+          npm init -y | Out-Null
+          npm install --ignore-scripts --no-audit --no-fund --install-links "$env:GITHUB_WORKSPACE\srt"
+          Copy-Item "$env:GITHUB_WORKSPACE\srt\.sourceweft\ci\sidecar.mjs" .
+          bun build --compile --define "__SRT_WIN_NAMESPACE__=`"$env:NS`"" sidecar.mjs --outfile "$env:RUNNER_TEMP\bin\srt-sidecar-ns.exe"
+          bun build --target=node --define "__SRT_WIN_NAMESPACE__=`"$env:NS`"" sidecar.mjs --outfile check-bundle.js | Out-Null
+          if (Select-String -Path check-bundle.js -Pattern '__SRT_WIN_NAMESPACE__' -SimpleMatch -Quiet) { throw 'the namespace define did not reach the bundle' }
+          Pop-Location
+          foreach ($p in @(@('sidecar-up', $env:CURRENT), @('sidecar-old', $env:PREVIOUS))) {
+            $d = Join-Path $env:RUNNER_TEMP $p[0]
+            New-Item -ItemType Directory -Force -Path $d | Out-Null
+            Push-Location $d
+            npm init -y | Out-Null
+            npm install --ignore-scripts --no-audit --no-fund "@anthropic-ai/sandbox-runtime@$($p[1].TrimStart('v'))"
+            Copy-Item "$env:GITHUB_WORKSPACE\srt\.sourceweft\ci\sidecar.mjs" .
+            Pop-Location
+          }
+      - name: Coexistence with upstream installs
+        env:
+          OURS_SRTWIN: ${{ runner.temp }}\libexec-ns\srt-win.exe
+          OURS_SIDECAR: ${{ runner.temp }}\bin\srt-sidecar-ns.exe
+          UP_DIR: ${{ runner.temp }}\sidecar-up
+          OLD_DIR: ${{ runner.temp }}\sidecar-old
+        run: ./srt/.sourceweft/ci/coexist.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.runner }}
+          path: ${{ env.RESULTS_DIR }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: srt-win-${{ matrix.runner }}
+          path: ${{ runner.temp }}\dist
+
+  publish:
+    needs: [prepare, linux, windows]
+    if: needs.prepare.outputs.skip == 'false'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require the sync token
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ]; then
+            echo "::error::SYNC_TOKEN is not set. The candidate passed every check but was not pushed; add a token that can write contents and workflows to this repository as the SYNC_TOKEN secret, then re-run."
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate
+      - name: Move the patch branch and tag the release
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          OLD_HEAD: ${{ needs.prepare.outputs.head }}
+        run: |
+          set -euo pipefail
+          git clone --quiet "https://x-access-token:${SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" fork
+          cd fork
+          git fetch --quiet ../candidate.bundle candidate:candidate
+          n=1
+          while git ls-remote --exit-code --tags origin "refs/tags/${TAG}-sourceweft.${n}" > /dev/null; do n=$((n + 1)); done
+          release="${TAG}-sourceweft.${n}"
+          git tag "$release" candidate
+          git push --quiet --force-with-lease="refs/heads/${PATCH_BRANCH}:${OLD_HEAD}" origin "candidate:refs/heads/${PATCH_BRANCH}"
+          git push --quiet origin "refs/tags/${release}"
+          echo "### Published $release ($(git rev-parse --short candidate))" >> "$GITHUB_STEP_SUMMARY"
