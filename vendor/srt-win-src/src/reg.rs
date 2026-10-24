@@ -48,9 +48,9 @@ use windows::Win32::System::Registry::{
 
 use crate::util::{OwnedSd, pcwstr, wstr};
 
-pub const BASE: &str = r"SOFTWARE\sandbox-runtime";
-pub const CRED_SUBKEY: &str = r"SOFTWARE\sandbox-runtime\Cred";
-pub const CA_SUBKEY: &str = r"SOFTWARE\sandbox-runtime\Ca";
+pub const BASE: &str = crate::namespace::REG_BASE;
+pub const CRED_SUBKEY: &str = crate::namespace::REG_CRED;
+pub const CA_SUBKEY: &str = crate::namespace::REG_CA;
 
 /// RAII HKEY.
 pub struct Key(HKEY);

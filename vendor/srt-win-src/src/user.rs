@@ -45,11 +45,11 @@ use crate::{sam, sid};
 /// runs as. Overridable at install time via `--sandbox-user`; the
 /// active name is recorded in the setup marker
 /// ([`crate::install::read_setup`]).
-pub const SANDBOX_USER: &str = "srt-sandbox";
+pub const SANDBOX_USER: &str = crate::namespace::SANDBOX_USER;
 
 /// Local group that holds [`SANDBOX_USER`]. Trustee for the
 /// credential-file DENY ACE.
-pub const SANDBOX_GROUP: &str = "sandbox-runtime-users";
+pub const SANDBOX_GROUP: &str = crate::namespace::SANDBOX_GROUP;
 
 /// Result of [`provision`] — the password is returned in clear so
 /// the caller can DPAPI-encrypt and persist it; it is not stored
