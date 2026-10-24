@@ -858,7 +858,7 @@ fn state_dir_from_base(base: Option<std::ffi::OsString>, var: &str) -> Result<Pa
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("{var} not set or empty"))?;
-    let dir = base.join("sandbox-runtime");
+    let dir = base.join(crate::namespace::STATE_DIR_NAME);
     if !dir.is_absolute() {
         bail!(
             "state-DB directory '{}' is not absolute \

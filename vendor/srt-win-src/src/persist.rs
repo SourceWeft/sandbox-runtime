@@ -60,7 +60,7 @@ pub fn is_capability_sid(sid: &str) -> bool {
 
 // ─── Marker ─────────────────────────────────────────────────────────
 
-pub(crate) const MARKER_KEY: &str = r"Software\sandbox-runtime\PersistentGrants";
+pub(crate) const MARKER_KEY: &str = crate::namespace::PERSIST_MARKER_KEY;
 const MARKER_ROOTS: &str = "Roots";
 const MARKER_EVER: &str = "EverEnabled";
 const MARKER_PENDING: &str = "Pending";
