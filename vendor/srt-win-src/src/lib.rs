@@ -15,6 +15,7 @@
 pub mod cli;
 pub use cli::{SRT_WIN_DISPATCH_ARG1, run_from_args};
 
+pub mod namespace;
 pub mod sam;
 pub mod sid;
 pub mod util;

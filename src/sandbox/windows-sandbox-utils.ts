@@ -6,6 +6,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { logForDebugging } from '../utils/debug.js'
+import { WINDOWS_NAMESPACE } from './windows-namespace.js'
 import {
   generateProxyEnvVars,
   encodeSandboxedCommand,
@@ -1864,7 +1865,7 @@ function checkTrustCaResult(caCertPath: string, r: RunResult): void {
 export function windowsStateDir(): string {
   const programData = process.env.ProgramData
   if (!programData) throw new Error('ProgramData is not set')
-  return path.win32.join(programData, 'sandbox-runtime')
+  return path.win32.join(programData, WINDOWS_NAMESPACE)
 }
 
 /** Result of {@link ensurePersistentWindowsCa}. */

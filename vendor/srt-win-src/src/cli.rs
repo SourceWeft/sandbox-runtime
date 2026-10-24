@@ -1578,7 +1578,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
             // Uninstall does the same; doing it here means the
             // upgrade path (re-run install) cleans up without a
             // separate uninstall step.
-            let _ = srt_win::sam::delete_local_group("sandbox-runtime-net");
+            let _ = srt_win::sam::delete_local_group(srt_win::namespace::LEGACY_NET_GROUP);
             eprintln!(
                 "srt-win: installed (sublayer={sl:?}, \
                  proxy_port_range={}-{}, loopback={}, \
@@ -1708,7 +1708,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
             // Migration: best-effort remove the legacy
             // discriminator group if a prior install left it.
             // Idempotent on already-absent.
-            let _ = srt_win::sam::delete_local_group("sandbox-runtime-net");
+            let _ = srt_win::sam::delete_local_group(srt_win::namespace::LEGACY_NET_GROUP);
             eprintln!("srt-win: uninstalled ({n} filter(s) removed). {user_note}");
             // Started elevated by the user, so no hop: this process is
             // also the calling user's half.

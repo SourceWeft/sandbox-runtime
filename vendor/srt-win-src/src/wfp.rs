@@ -83,7 +83,7 @@ use windows::core::{GUID, PCWSTR, PWSTR};
 /// previous install. Overridable via `--sublayer-guid` so an
 /// enterprise that provisions WFP via its own tooling can point us at
 /// theirs. {2c5d0ad6-5f3b-4d4e-9b8f-1a3e7c9d0b21}
-pub const DEFAULT_SUBLAYER_GUID: GUID = GUID::from_u128(0x2c5d0ad6_5f3b_4d4e_9b8f_1a3e7c9d0b21);
+pub const DEFAULT_SUBLAYER_GUID: GUID = GUID::from_u128(crate::namespace::SUBLAYER_GUID);
 
 /// Default loopback port range for the PERMIT filter. The JS mux
 /// proxy (front-end + http backend) binds inside this range on

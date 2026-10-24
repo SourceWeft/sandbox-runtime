@@ -233,7 +233,7 @@ pub const BUILT_IN: &[Excl] = &[
     // access list, deny included, on every open.
     Excl {
         base: Local,
-        path: "sandbox-runtime",
+        path: crate::namespace::STATE_DIR_NAME,
         dir: true,
         stamp: false,
         ungranted_only: false,
