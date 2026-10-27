@@ -594,16 +594,6 @@ const SANDBOX_OWN_WRITE_PATHS: readonly string[] = [
 ]
 
 /**
- * The entries of {@link SANDBOX_OWN_WRITE_PATHS} that are a directory on the
- * host's disk rather than a device: the one thing here a `denyRead` can
- * meaningfully hide.
- */
-const SANDBOX_OWN_TMP_DIRS: readonly string[] = [
-  '/tmp/claude',
-  '/private/tmp/claude',
-]
-
-/**
  * Directories under the home directory made writable as a convenience the
  * caller never asked for. Every entry is subject to the read-rule check in
  * {@link getDefaultWritePaths}.
@@ -628,12 +618,8 @@ const HOME_CONVENIENCE_WRITE_DIRS: readonly string[] = [
  * denyRead wins over the implicit write allow. It is kept when an `allowRead`
  * entry beneath that deny re-opens it, because the caller has already made it
  * readable. A caller who wants it writable regardless lists it in
- * `allowWrite`. What the sandbox itself needs (stdio) is never left out. Its
- * TMPDIR (/tmp/claude, /private/tmp/claude) is left out only when a `denyRead`
- * entry reaches it without also reaching the directory it sits in, so
- * `denyRead: ['/tmp/claude']` hides an existing one (bound back, it would
- * stay readable on Linux), while `/` and `/tmp` leave it as it is. The caller
- * then points TMPDIR (CLAUDE_CODE_TMPDIR) somewhere writable.
+ * `allowWrite`. What the sandbox itself needs (stdio, /tmp/claude) is never
+ * left out.
  *
  * Pass the entries as configured, not expanded. `dir/**` counts as `dir`,
  * and a glob covers a directory when it matches that directory or one above
@@ -656,34 +642,10 @@ export function getDefaultWritePaths(readRules?: {
     !readRules || readRules.denyRead.length === 0
       ? HOME_CONVENIENCE_WRITE_DIRS
       : homeDirsNotReadDenied(home, readRules.denyRead, readRules.allowRead)
-  const ownPaths =
-    !readRules || readRules.denyRead.length === 0
-      ? SANDBOX_OWN_WRITE_PATHS
-      : SANDBOX_OWN_WRITE_PATHS.filter(
-          p => !ownTmpDirIsReadDenied(p, readRules.denyRead),
-        )
-  return [...ownPaths, ...keptDirs.map(rel => path.join(home, rel))]
-}
-
-/**
- * Whether `p` is one of {@link SANDBOX_OWN_TMP_DIRS} and a `denyRead` entry
- * covers it without covering its parent directory. An entry that spans the
- * whole of /tmp (or `/`) is not a decision about srt's own directory, so it
- * keeps today's answer; one that names it is.
- */
-function ownTmpDirIsReadDenied(
-  p: string,
-  denyRead: readonly FilesystemPathEntry[],
-): boolean {
-  if (!SANDBOX_OWN_TMP_DIRS.includes(p)) return false
-  const spellings = [
-    ...new Set([p, normalizePathForSandbox(p, { literal: true })]),
+  return [
+    ...SANDBOX_OWN_WRITE_PATHS,
+    ...keptDirs.map(rel => path.join(home, rel)),
   ]
-  const parents = spellings.map(s => path.dirname(s))
-  return denyRead.some(entry => {
-    const covers = readRuleCovers(entry)
-    return spellings.some(covers) && !parents.some(covers)
-  })
 }
 
 /**
