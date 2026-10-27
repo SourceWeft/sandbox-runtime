@@ -1,0 +1,42 @@
+name: scratch linux check
+on:
+  push:
+    branches: ['scratch/deny-own-write-paths-linux-ci']
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: System dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap libseccomp-dev gcc socat ripgrep apparmor-profiles zsh
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          bwrap --unshare-pid --unshare-user --cap-drop ALL --ro-bind / / --proc /proc true
+      - name: Upstream test suite plus the new tests
+        env:
+          HUSKY: '0'
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund
+          npx eslint . --ignore-pattern '.sourceweft/**'
+          npm run typecheck
+          npm run build:seccomp
+          npm run build:java-agent
+          npm run build
+          mkdir -p /tmp/claude-preexisting-check
+          npm test
