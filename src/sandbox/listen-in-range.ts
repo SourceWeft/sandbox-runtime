@@ -1,5 +1,18 @@
 /**
- * Bind `server` to the first free port in `range`, retrying on EADDRINUSE.
+ * The bind errors that say this one port cannot be had while the next one
+ * may be. EADDRINUSE is a port someone listens on. EACCES is what Node
+ * makes of Windows' WSAEACCES: a port held with SO_EXCLUSIVEADDRUSE, held
+ * by another account, or inside a reserved (excluded) port range. Any
+ * other error is about the address or the socket and is not retried.
+ */
+const PORT_UNAVAILABLE_CODES: ReadonlySet<string | undefined> = new Set([
+  'EADDRINUSE',
+  'EACCES',
+])
+
+/**
+ * Bind `server` to the first free port in `range`, moving on to the next
+ * port when one is unavailable (EADDRINUSE or EACCES).
  * With `range` undefined, binds to ephemeral port 0 once. The Windows WFP
  * loopback permit is installed by range, so proxy listeners on Windows must
  * land inside it; other platforms bake the actual ephemeral port into the
@@ -37,7 +50,7 @@ export function listenInRange(
         server.removeListener('listening', onListening)
         if (
           range &&
-          (err as NodeJS.ErrnoException)?.code === 'EADDRINUSE' &&
+          PORT_UNAVAILABLE_CODES.has((err as NodeJS.ErrnoException)?.code) &&
           port < hi
         ) {
           port++
